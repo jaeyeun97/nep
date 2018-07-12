@@ -1,0 +1,7 @@
+[package]
+name = "nep"
+version = "0.1.0"
+authors = ["Nathan Corbyn <me@nathancorbyn.com>"]
+
+[dependencies]
+termion = "*"
