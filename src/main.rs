@@ -5,8 +5,9 @@ use terminal::Terminal;
 fn main() {
     {
         let mut term = Terminal::new();
-        term.update();
+        term.start();
     }
 
-    println!("Test");
+    println!("nep exited :((");
+    println!("hope you loved it <3");
 }
