@@ -5,6 +5,7 @@ use terminal::Terminal;
 fn main() {
     {
         let mut term = Terminal::new();
+        // Initialisation and setup would be done here
         term.start();
     }
 
