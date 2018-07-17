@@ -5,6 +5,7 @@ authors = ["Nathan Corbyn <me@nathancorbyn.com>"]
 
 [dependencies]
 termion = "*"
+dbus = "0.6.2"
 
 [[bin]]
 name = "nep"
