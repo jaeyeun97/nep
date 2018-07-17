@@ -5,3 +5,11 @@ authors = ["Nathan Corbyn <me@nathancorbyn.com>"]
 
 [dependencies]
 termion = "*"
+
+[[bin]]
+name = "nep"
+path = "src/client/main.rs"
+
+[[bin]]
+name = "nepd"
+path = "src/daemon/main.rs"
