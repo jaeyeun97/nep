@@ -1,5 +1,9 @@
 extern crate nep;
 
+use std::env;
+
 fn main() {
-    nep::nep();
+    let mut args: Vec<String> = env::args().collect();
+    args.remove(0);
+    nep::nep(args);
 }
