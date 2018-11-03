@@ -9,7 +9,7 @@ use termion::event::Key;
 use termion::input::TermRead;
 use termion::raw::{IntoRawMode, RawTerminal};
 use termion::screen::AlternateScreen;
-use termion::{clear, cursor, terminal_size};
+use termion::{clear, cursor, style, terminal_size};
 
 pub struct Interface<T: 'static + Send + Sync + std::io::Write> {
     write: Arc<Mutex<RawTerminal<AlternateScreen<T>>>>,
@@ -20,11 +20,18 @@ pub struct Interface<T: 'static + Send + Sync + std::io::Write> {
     draw_ready: Arc<(Mutex<bool>, Condvar)>,
     cursor_update: Arc<(Mutex<bool>, Condvar)>,
     will_stop: Arc<Mutex<bool>>,
+    splashed: Arc<Mutex<bool>>,
 }
 
 impl<T: 'static + Send + Sync + std::io::Write> Interface<T> {
     pub fn from(t: T) -> Interface<T> {
         let buffer = Arc::new(Mutex::new(Buffer::new()));
+        let interface = Interface::from_buffer(t, buffer);
+        *interface.splashed.lock().unwrap() = false;
+        interface
+    }
+
+    pub fn from_buffer(t: T, buffer: Arc<Mutex<Buffer>>) -> Interface<T> {
         Interface {
             size: Arc::new(Mutex::new(terminal_size().unwrap())),
             write: Arc::new(Mutex::new(
@@ -36,6 +43,7 @@ impl<T: 'static + Send + Sync + std::io::Write> Interface<T> {
             draw_ready: Arc::new((Mutex::new(true), Condvar::new())),
             cursor_update: Arc::new((Mutex::new(true), Condvar::new())),
             will_stop: Arc::new(Mutex::new(false)),
+            splashed: Arc::new(Mutex::new(true)),
         }
     }
 
@@ -44,6 +52,7 @@ impl<T: 'static + Send + Sync + std::io::Write> Interface<T> {
         let draw_ready = Arc::clone(&self.draw_ready);
         let cursor_update = Arc::clone(&self.cursor_update);
         let will_stop = Arc::clone(&self.will_stop);
+        let splashed = Arc::clone(&self.splashed);
 
         thread::spawn(move || loop {
             if *will_stop.lock().unwrap() {
@@ -61,6 +70,7 @@ impl<T: 'static + Send + Sync + std::io::Write> Interface<T> {
             }
 
             if size_change {
+                *splashed.lock().unwrap() = true;
                 let &(ref lock, ref cvar) = &*cursor_update;
                 *lock.lock().unwrap() = true;
                 cvar.notify_one();
@@ -79,6 +89,7 @@ impl<T: 'static + Send + Sync + std::io::Write> Interface<T> {
         let write = Arc::clone(&self.write);
         let buffer = Arc::clone(&self.buffer);
         let offset = Arc::clone(&self.offset);
+        let splashed = Arc::clone(&self.splashed);
 
         thread::spawn(move || loop {
             if *will_stop.lock().unwrap() {
@@ -94,9 +105,12 @@ impl<T: 'static + Send + Sync + std::io::Write> Interface<T> {
             let mut write = write.lock().unwrap();
             let (width, height) = *size.lock().unwrap();
             let offset = *offset.lock().unwrap();
-            let mut buffer = buffer.lock().unwrap();
+            let buffer = buffer.lock().unwrap();
 
-            write!(write, "{}{}{}", cursor::Hide, cursor::Save, clear::All);
+            write!(write, "{}{}", cursor::Hide, cursor::Save);
+            if *splashed.lock().unwrap() {
+                write!(write, "{}", clear::All);
+            }
 
             let line_number_width = f64::log10(buffer.len() as f64).floor() as u16 + 2;
 
@@ -138,9 +152,25 @@ impl<T: 'static + Send + Sync + std::io::Write> Interface<T> {
 
             while written < height.saturating_sub(1) {
                 write!(write, "{}", cursor::Goto(1, written + 1));
-                write!(write, "{line: >0$}", line_number_width as usize, line = "~");
+                write!(write, "{}", "~");
                 written += 1;
             }
+
+            write!(
+                write,
+                "{}{} {} ",
+                cursor::Goto(1, height),
+                style::Invert,
+                buffer.get_name(),
+            );
+
+            write!(write, "{}", style::Reset);
+
+            write!(
+                write,
+                "{}nep ",
+                cursor::Goto(width.saturating_sub(3), height),
+            );
 
             write!(write, "{}{}", cursor::Restore, cursor::Show);
             *ready = false;
@@ -198,7 +228,7 @@ impl<T: 'static + Send + Sync + std::io::Write> Interface<T> {
             let line = cursor.line();
             let column = cursor.column();
 
-            let mut buffer = buffer.lock().unwrap();
+            let buffer = buffer.lock().unwrap();
             let line_number_width = f64::log10(buffer.len() as f64).floor() as u16 + 3;
             let max_width = width - line_number_width;
 
@@ -227,21 +257,55 @@ impl<T: 'static + Send + Sync + std::io::Write> Interface<T> {
     }
 
     fn notify_cursor(&self) {
+        *self.splashed.lock().unwrap() = true;
         let &(ref lock, ref cvar) = &*self.cursor_update;
         *lock.lock().unwrap() = true;
         cvar.notify_one();
     }
 
     fn notify_draw(&self) {
+        *self.splashed.lock().unwrap() = true;
         let &(ref lock, ref cvar) = &*self.draw_ready;
         *lock.lock().unwrap() = true;
         cvar.notify_one();
     }
 
+    fn show_splash(&self) {
+        let mut write = self.write.lock().unwrap();
+        let (width, height) = *self.size.lock().unwrap();
+        let (width, height) = (width as usize, height as usize);
+
+        let splash = include_str!("splash").to_string();
+        let mut splash = splash.split("#").peekable();
+
+        let (lower, _) = splash.size_hint();
+
+        write!(write, "{}{}", cursor::Goto(5, 5), lower);
+
+        if width >= splash.peek().unwrap().to_string().len() + 6 && height >= lower + 8 {
+            write!(write, "{}", clear::All);
+            for (i, line) in splash.enumerate() {
+                write!(
+                    write,
+                    "{}{}",
+                    cursor::Goto(
+                        ((width - line.len()) / 2) as u16,
+                        ((height - lower) / 2 + i - 8) as u16
+                    ),
+                    line,
+                );
+            }
+            write.flush().unwrap();
+        }
+    }
+
     pub fn start<U: std::io::Read>(mut self, u: U) {
+        if !*self.splashed.lock().unwrap() {
+            self.show_splash();
+        }
         let draw_thread = self.start_draw();
-        let resize_thread = self.start_resize();
         let cursor_thread = self.start_cursor_update();
+        let resize_thread = self.start_resize();
 
         for key in u.keys() {
             match key.unwrap() {
@@ -254,7 +318,7 @@ impl<T: 'static + Send + Sync + std::io::Write> Interface<T> {
                             self.buffer
                                 .lock()
                                 .unwrap()
-                                .borrow_line(line)
+                                .borrow_line_mut(line)
                                 .insert(column, ' ');
                             cursor.right();
                         }
@@ -281,7 +345,7 @@ impl<T: 'static + Send + Sync + std::io::Write> Interface<T> {
                         self.buffer
                             .lock()
                             .unwrap()
-                            .borrow_line(line)
+                            .borrow_line_mut(line)
                             .insert(column, c);
                         cursor.right();
                     }
@@ -314,7 +378,7 @@ impl<T: 'static + Send + Sync + std::io::Write> Interface<T> {
                             self.buffer
                                 .lock()
                                 .unwrap()
-                                .borrow_line(line)
+                                .borrow_line_mut(line)
                                 .delete(column - 1);
                             if column < self.buffer.lock().unwrap().borrow_line(line).len() {
                                 cursor.left();
@@ -336,6 +400,10 @@ impl<T: 'static + Send + Sync + std::io::Write> Interface<T> {
                     self.notify_draw();
                     draw_thread.join().unwrap();
                     break;
+                }
+                Key::Ctrl('s') => {
+                    self.buffer.lock().unwrap().write_back();
+                    self.notify_draw();
                 }
                 _ => continue,
             }
