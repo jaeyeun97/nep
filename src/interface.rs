@@ -20,6 +20,7 @@ pub struct Interface<T: 'static + Send + Sync + std::io::Write> {
     draw_ready: Arc<(Mutex<bool>, Condvar)>,
     cursor_update: Arc<(Mutex<bool>, Condvar)>,
     will_stop: Arc<Mutex<bool>>,
+    splashed: Arc<Mutex<bool>>,
 }
 
 impl<T: 'static + Send + Sync + std::io::Write> Interface<T> {
@@ -36,6 +37,7 @@ impl<T: 'static + Send + Sync + std::io::Write> Interface<T> {
             draw_ready: Arc::new((Mutex::new(true), Condvar::new())),
             cursor_update: Arc::new((Mutex::new(true), Condvar::new())),
             will_stop: Arc::new(Mutex::new(false)),
+            splashed: Arc::new(Mutex::new(false)),
         }
     }
 
@@ -44,6 +46,7 @@ impl<T: 'static + Send + Sync + std::io::Write> Interface<T> {
         let draw_ready = Arc::clone(&self.draw_ready);
         let cursor_update = Arc::clone(&self.cursor_update);
         let will_stop = Arc::clone(&self.will_stop);
+        let splashed = Arc::clone(&self.splashed);
 
         thread::spawn(move || loop {
             if *will_stop.lock().unwrap() {
@@ -61,6 +64,7 @@ impl<T: 'static + Send + Sync + std::io::Write> Interface<T> {
             }
 
             if size_change {
+                *splashed.lock().unwrap() = true;
                 let &(ref lock, ref cvar) = &*cursor_update;
                 *lock.lock().unwrap() = true;
                 cvar.notify_one();
@@ -79,6 +83,7 @@ impl<T: 'static + Send + Sync + std::io::Write> Interface<T> {
         let write = Arc::clone(&self.write);
         let buffer = Arc::clone(&self.buffer);
         let offset = Arc::clone(&self.offset);
+        let splashed = Arc::clone(&self.splashed);
 
         thread::spawn(move || loop {
             if *will_stop.lock().unwrap() {
@@ -96,7 +101,10 @@ impl<T: 'static + Send + Sync + std::io::Write> Interface<T> {
             let offset = *offset.lock().unwrap();
             let mut buffer = buffer.lock().unwrap();
 
-            write!(write, "{}{}{}", cursor::Hide, cursor::Save, clear::All);
+            write!(write, "{}{}", cursor::Hide, cursor::Save);
+            if *splashed.lock().unwrap() {
+                write!(write, "{}", clear::All);
+            }
 
             let line_number_width = f64::log10(buffer.len() as f64).floor() as u16 + 2;
 
@@ -227,21 +235,53 @@ impl<T: 'static + Send + Sync + std::io::Write> Interface<T> {
     }
 
     fn notify_cursor(&self) {
+        *self.splashed.lock().unwrap() = true;
         let &(ref lock, ref cvar) = &*self.cursor_update;
         *lock.lock().unwrap() = true;
         cvar.notify_one();
     }
 
     fn notify_draw(&self) {
+        *self.splashed.lock().unwrap() = true;
         let &(ref lock, ref cvar) = &*self.draw_ready;
         *lock.lock().unwrap() = true;
         cvar.notify_one();
     }
 
+    fn show_splash(&self) {
+        let mut write = self.write.lock().unwrap();
+        let (width, height) = *self.size.lock().unwrap();
+        let (width, height) = (width as usize, height as usize);
+
+        let splash = include_str!("splash").to_string();
+        let mut splash = splash.split("#").peekable();
+
+        let (lower, _) = splash.size_hint();
+
+        write!(write, "{}{}", cursor::Goto(5, 5), lower);
+
+        if width >= splash.peek().unwrap().to_string().len() + 6 && height >= lower + 8 {
+            write!(write, "{}", clear::All);
+            for (i, line) in splash.enumerate() {
+                write!(
+                    write,
+                    "{}{}",
+                    cursor::Goto(
+                        ((width - line.len()) / 2) as u16,
+                        ((height - lower) / 2 + i - 8) as u16
+                    ),
+                    line,
+                );
+            }
+            write.flush().unwrap();
+        }
+    }
+
     pub fn start<U: std::io::Read>(mut self, u: U) {
+        self.show_splash();
         let draw_thread = self.start_draw();
-        let resize_thread = self.start_resize();
         let cursor_thread = self.start_cursor_update();
+        let resize_thread = self.start_resize();
 
         for key in u.keys() {
             match key.unwrap() {
