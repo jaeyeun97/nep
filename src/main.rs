@@ -1,13 +1,5 @@
-mod terminal;
-
-use terminal::Terminal;
+extern crate nep;
 
 fn main() {
-    {
-        let mut term = Terminal::new();
-        term.start();
-    }
-
-    println!("nep exited :((");
-    println!("hope you loved it <3");
+    nep::nep();
 }

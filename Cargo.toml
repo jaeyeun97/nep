@@ -5,3 +5,4 @@ authors = ["Nathan Corbyn <me@nathancorbyn.com>"]
 
 [dependencies]
 termion = "*"
+lazy_static = "*"
